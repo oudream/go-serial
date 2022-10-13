@@ -1,4 +1,4 @@
-module go.bug.st/serial
+module serial
 
 go 1.17
 

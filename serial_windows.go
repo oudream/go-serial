@@ -77,53 +77,78 @@ func (port *windowsPort) Close() error {
 
 func (port *windowsPort) Read(p []byte) (int, error) {
 	var readed uint32
-	ev, err := createOverlappedEvent()
+	evWait, err := createOverlappedEvent()
 	if err != nil {
 		return 0, err
 	}
-	defer syscall.CloseHandle(ev.HEvent)
+	defer syscall.CloseHandle(evWait.HEvent)
+	evRead, err := createOverlappedEvent()
+	if err != nil {
+		return 0, err
+	}
+	defer syscall.CloseHandle(evRead.HEvent)
+
+	// comstat.CbInQue > 0//有数据
+	var comstat COMSTAT
+	var Error uint32
 
 	cycles := int64(0)
 	for {
-		err := syscall.ReadFile(port.handle, p, &readed, ev)
+		// WaitEvent & 0x01 缓存中有数据到达
+		var WaitEvent uint32 = 0
+		evWait.Offset = 0
+		// 等待事件成功
+		err = waitCommEvent(port.handle, &WaitEvent, evWait)
 		if err == syscall.ERROR_IO_PENDING {
-			err = getOverlappedResult(port.handle, ev, &readed, true)
+			// GetOverlappedResult函数的最后一个参数设为TRUE，函数会一直等待，直到读操作完成或由于错误而返回。
+			err = getOverlappedResult(port.handle, evWait, &readed, true)
 		}
-		switch err {
-		case nil:
-			// operation completed successfully
-		case syscall.ERROR_OPERATION_ABORTED:
-			// port may have been closed
-			return int(readed), &PortError{code: PortClosed, causedBy: err}
-		default:
-			// error happened
-			return int(readed), err
-		}
+		_ = clearCommError(port.handle, &Error, &comstat)
+		if err == nil && WaitEvent > 0 && comstat.CbInQue > 0 {
 
-		if readed > 0 {
-			return int(readed), nil
-		}
-		if err := resetEvent(ev.HEvent); err != nil {
-			return 0, err
-		}
-
-		if port.readTimeoutCycles != -1 {
-			cycles++
-			if cycles == port.readTimeoutCycles {
-				// Timeout
-				return 0, nil
+			err := syscall.ReadFile(port.handle, p, &readed, evRead)
+			if err == syscall.ERROR_IO_PENDING {
+				err = getOverlappedResult(port.handle, evRead, &readed, true)
 			}
-		}
+			switch err {
+			case nil:
+				// operation completed successfully
+			case syscall.ERROR_OPERATION_ABORTED:
+				// port may have been closed
+				return int(readed), &PortError{code: PortClosed, causedBy: err}
+			default:
+				// error happened
+				return int(readed), err
+			}
 
-		// At the moment it seems that the only reliable way to check if
-		// a serial port is alive in Windows is to check if the SetCommState
-		// function fails.
+			if readed > 0 {
+				return int(readed), nil
+			}
+			if err := resetEvent(evRead.HEvent); err != nil {
+				return 0, err
+			}
 
-		params := &dcb{}
-		getCommState(port.handle, params)
-		if err := setCommState(port.handle, params); err != nil {
-			port.Close()
-			return 0, err
+			if port.readTimeoutCycles != -1 {
+				cycles++
+				if cycles == port.readTimeoutCycles {
+					// Timeout
+					return 0, nil
+				}
+			}
+
+			// At the moment it seems that the only reliable way to check if
+			// a serial port is alive in Windows is to check if the SetCommState
+			// function fails.
+
+			params := &dcb{}
+			_ = getCommState(port.handle, params)
+			if err := setCommState(port.handle, params); err != nil {
+				_ = port.Close()
+				return 0, err
+			}
+
+			// PURGE_RXCLEAR | PURGE_RXABORT == 0x8 | 0x2
+			_ = purgeComm(port.handle, 0x8|0x2)
 		}
 	}
 }
@@ -408,7 +433,7 @@ func (port *windowsPort) SetReadTimeout(timeout time.Duration) error {
 }
 
 func createOverlappedEvent() (*syscall.Overlapped, error) {
-	h, err := createEvent(nil, true, false, nil)
+	h, err := createEvent(nil, false, false, nil)
 	return &syscall.Overlapped{HEvent: h}, err
 }
 
@@ -439,15 +464,20 @@ func nativeOpen(portName string, mode *Mode) (*windowsPort, error) {
 		handle: handle,
 	}
 
+	if err = setupComm(port.handle, 4096, 4096); err != nil {
+		_ = port.Close()
+		return nil, &PortError{code: InvalidSerialPort, causedBy: err}
+	}
+
 	// Set port parameters
-	if port.SetMode(mode) != nil {
-		port.Close()
-		return nil, &PortError{code: InvalidSerialPort}
+	if err = port.SetMode(mode); err != nil {
+		_ = port.Close()
+		return nil, &PortError{code: InvalidSerialPort, causedBy: err}
 	}
 
 	params := &dcb{}
 	if getCommState(port.handle, params) != nil {
-		port.Close()
+		_ = port.Close()
 		return nil, &PortError{code: InvalidSerialPort}
 	}
 	params.Flags &= dcbDTRControlDisableMask
@@ -476,14 +506,32 @@ func nativeOpen(portName string, mode *Mode) (*windowsPort, error) {
 	params.XoffLim = 512
 	params.XonChar = 17  // DC1
 	params.XoffChar = 19 // C3
-	if setCommState(port.handle, params) != nil {
-		port.Close()
-		return nil, &PortError{code: InvalidSerialPort}
+	if err = setCommState(port.handle, params); err != nil {
+		_ = port.Close()
+		return nil, &PortError{code: InvalidSerialPort, causedBy: err}
 	}
 
-	if port.SetReadTimeout(NoTimeout) != nil {
-		port.Close()
-		return nil, &PortError{code: InvalidSerialPort}
+	// set time out
+	if err = port.SetReadTimeout(NoTimeout); err != nil {
+		_ = port.Close()
+		return nil, &PortError{code: InvalidSerialPort, causedBy: err}
 	}
+
+	// reset input | output buffer
+	if err = port.ResetInputBuffer(); err != nil {
+		_ = port.Close()
+		return nil, &PortError{code: InvalidSerialPort, causedBy: err}
+	}
+	if err = port.ResetOutputBuffer(); err != nil {
+		_ = port.Close()
+		return nil, &PortError{code: InvalidSerialPort, causedBy: err}
+	}
+
+	// EV_ERR | EV_RXCHAR == 0x80|0x1
+	if err = setCommMask(port.handle, 0x80|0x1); err != nil {
+		_ = port.Close()
+		return nil, &PortError{code: InvalidSerialPort, causedBy: err}
+	}
+
 	return port, nil
 }
