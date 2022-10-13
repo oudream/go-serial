@@ -17,8 +17,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/oudream/go-serial/unixutils"
 	"golang.org/x/sys/unix"
-	"serial/unixutils"
 )
 
 type unixPort struct {
