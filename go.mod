@@ -1,4 +1,4 @@
-module go-serial
+module github.com/oudream/go-serial
 
 go 1.17
 

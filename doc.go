@@ -10,7 +10,7 @@ Package serial is a cross-platform serial library for the go language.
 The canonical import for this library is go-serial so the import line
 is the following:
 
-	import "go-serial"
+	import "github.com/oudream/go-serial"
 
 It is possible to get the list of available serial ports with the
 GetPortsList function:
@@ -84,7 +84,7 @@ cable or a microcontroller development board) is possible to retrieve
 the USB metadata, like VID/PID or USB Serial Number, with the
 GetDetailedPortsList function in the enumerator package:
 
-	import "go-serial/enumerator"
+	import "github.com/oudream/go-serial/enumerator"
 
 	ports, err := enumerator.GetDetailedPortsList()
 	if err != nil {

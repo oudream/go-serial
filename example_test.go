@@ -11,7 +11,7 @@ import (
 	"log"
 	"strings"
 
-	"go-serial"
+	"github.com/oudream/go-serial"
 )
 
 // This example prints the list of serial ports and use the first one
