@@ -1,4 +1,4 @@
-module serial
+module go-serial
 
 go 1.17
 

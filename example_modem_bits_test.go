@@ -11,7 +11,7 @@ import (
 	"log"
 	"time"
 
-	"go.bug.st/serial"
+	"go-serial"
 )
 
 func ExampleGetSetModemBits() {

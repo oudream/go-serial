@@ -2,8 +2,8 @@ package main
 
 import (
 	"fmt"
+	"go-serial"
 	"log"
-	"serial"
 	"strings"
 	"time"
 )
